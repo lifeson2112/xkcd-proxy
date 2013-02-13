@@ -1,0 +1,153 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use CGI::Ex::Dump qw(debug);
+use base qw(CGI::Ex::App);
+
+my $p = bless {},__PACKAGE__;
+$p->navigate;
+exit;
+
+#should be relative to the document root
+sub image_folder {"/xkcd_comics"}
+
+sub main_next_step {'page'}
+sub main_skip {1}
+
+sub page_path_info_map {return [[qr{^/\w+/([^/]+)$}, 'page'],]; }
+
+sub page_hash_swap {
+    my $self = shift;
+    my $form = $self->form;
+    my $script_path = $ENV{'SCRIPT_NAME'};
+    my $image_folder_rel = $self->image_folder;
+    my $image_folder_abs = $ENV{'DOCUMENT_ROOT'}.$image_folder_rel;
+    my $page_no = $form->{'page'};
+    my $page;
+    if (defined $page_no && $page_no eq 'random') {
+        #grab number of latest comic
+        $page = `curl http://xkcd.com/`;
+        $page =~ s/\n//ig;
+        $page =~ s/\s//ig;
+        my ($current_no) = $page =~ m/Permanentlinktothiscomic:http:\/\/xkcd.com\/([0-9]*)\//ig;
+        my $random = rand($current_no);
+        $page_no = int($random); 
+    }
+
+    #get page
+    $page = `curl http://xkcd.com/$page_no/`;
+    #remove spaces and new lines from page for easier parsing
+    $page =~ s/\n//ig;
+    my $page_spaces = $page;
+    $page =~ s/\s//ig;
+
+    #get forwards and backwards numbers
+    my ($page_no_plus_one) = $page_spaces =~ m#href="/?([0-9\#]{0,6})/?" accesskey="n">#i;;
+    my ($page_no_min_one) = $page_spaces =~ m#href="/?([0-9\#]{0,6})/?" accesskey="p">#i;;
+
+    #get image url
+    my ($image_url) = $page =~ m/embedding\):([^<]*)/i;
+
+    #fix imagename for wget
+    $image_url =~ s/\(/\\(/g;
+    $image_url =~ s/\)/\\)/g;
+
+    #get image name
+    my ($image_name) = $image_url =~ m/comics\/(.*\..*)/g;
+    $image_name =~ s/\\//g;
+
+    #save image file and cache it
+    `curl $image_url > "$image_folder_abs/$image_name"` 
+        if !-e "$image_folder_abs/$image_name";
+
+    #get image alt
+    #$page_spaces =~ m/img src="[0-9a-zA-Z:\/._\(\)]*" title="([-0-9a-zA-Z\s,.&#;\?\(\)%!:\*+=@]*)"? alt/g;
+    my $image_meta_quoted = quotemeta($image_name);
+    my ($alt_text) = $page_spaces =~ m/img src=".*$image_meta_quoted" title="([^"]*)" alt/g;
+
+    $script_path =~ s/^\/*//g;
+
+    #I just use this when file is served directly at '/'. totally arbitrary and unique to my shitty http server.
+    $script_path = "xkcd" if !$script_path;
+ 
+    $script_path = "/$script_path";
+    my $back_link = $page_no_min_one eq '#' ? '#' : "$script_path/page/$page_no_min_one";
+    my $forward_link = $page_no_plus_one eq '#' ? '#' : "$script_path/page/$page_no_plus_one";
+
+    return {
+        image_name   => $image_name,
+        alt_text     => $alt_text,
+        back_link    => $back_link,
+        forward_link => $forward_link,
+        script_path  => $script_path,
+        image_folder => $image_folder_rel,
+    }
+}
+
+sub page_file_print {\q{
+<html>
+    <head>  
+        <meta name = "viewport" content = "initial-scale = 1.0">
+        <title>XKCD!!</title>
+        <style type="text/css">
+            body{
+                text-align: center;
+                margin: 0 auto;
+                background-color:#000000;
+                font-family: helvetica;
+            }
+            
+            a{
+                color:#ffffff;
+            }
+
+
+            #imageDiv{
+                color:#ffffff;
+                width: 100%;
+                text-align: center;
+                margin: 0 auto;
+            }
+            
+            #imageDiv h3{
+                
+                display: block;
+                margin: 0 auto;
+                width:500px;
+            }
+
+        </style>
+        <script type="text/javascript" language="javascript">
+            var updateLayout = function() {
+                if (window.innerWidth != currentWidth) {
+                    currentWidth = window.innerWidth;
+                    var orient = (currentWidth == 320) ? "profile" : "landscape";
+                    document.body.setAttribute("orient", orient);
+                    window.scrollTo(0, 1);
+                  }
+                };
+            iPhone.DomLoad(updateLayout);
+            setInterval(updateLayout, 500); 
+        </script>
+    </head>
+    <body>
+        <div id="imageDiv">
+            <img src="[% image_folder %]/[% image_name %]">
+            <h3>[% alt_text %]</h3>
+            <div id="navButtons">
+                <a href="[% back_link %]">Back</a>
+                &nbsp; &nbsp; 
+                <a href="[% script_path %]/page/random" id="randlink">Random</a>
+                &nbsp; &nbsp; 
+                <a href="[% forward_link %]">Forward</a>
+            </div>
+        </div>
+        <script>
+            var rand = Math.floor((Math.random()*10000)+1);
+            document.getElementById('randlink').href="[% script_path %]/page/random?rand="+rand;
+        </script>
+    </body>
+</html>
+    }}
